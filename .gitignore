@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Local Data and Logs
+*.db
+*.db-wal
+*.db-shm
+config.json
+bin/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
