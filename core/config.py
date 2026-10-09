@@ -47,7 +47,7 @@ class Config:
         "output_dir": str(Path.home() / "Downloads"),
         "delay_between": 8,
         "initial_sleep": 0,
-        "cookies_from_browser": "firefox",
+        "cookies_from_browser": "auto",
         "cookies_file": "",
         "enable_js_runtime": True,
         "quality_format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",

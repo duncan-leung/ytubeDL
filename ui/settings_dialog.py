@@ -90,7 +90,7 @@ class SettingsDialog(QDialog):
         h_browser = QHBoxLayout()
         h_browser.addWidget(QLabel("Extract cookies from browser:"))
         self.cmb_browser = QComboBox(self)
-        self.cmb_browser.addItems(["firefox", "chrome", "edge", "safari", "brave", "none"])
+        self.cmb_browser.addItems(["auto", "none", "chrome", "edge", "firefox", "safari", "brave"])
         h_browser.addWidget(self.cmb_browser)
         h_browser.addStretch()
         l_auth.addLayout(h_browser)
