@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:  # Allows manual 1-click trigger in GitHub Actions tab
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build on ${{ matrix.os }}
@@ -42,26 +45,30 @@ jobs:
           zip -r ytubeDL-macOS.zip ytubeDL.app
           cd ..
 
-      - name: Upload Windows Executable
+      - name: Upload Windows Executable (Artifact)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ytubeDL-Windows
           path: dist/ytubeDL.exe
 
-      - name: Upload macOS App
+      - name: Upload macOS App (Artifact)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: ytubeDL-macOS
           path: dist/ytubeDL-macOS.zip
 
-      - name: Create GitHub Release (On Tag Push)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.0.0' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'ytubeDL v1.0.0' }}
+          draft: false
+          prerelease: false
           files: |
             dist/ytubeDL.exe
             dist/ytubeDL-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
