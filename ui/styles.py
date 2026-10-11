@@ -91,6 +91,27 @@ QPushButton#btn_add:hover {
     background-color: #2563eb;
 }
 
+QPushButton#btn_convert_mp3 {
+    background-color: #7c3aed;
+    border: 1px solid #6d28d9;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+QPushButton#btn_convert_mp3:hover {
+    background-color: #6d28d9;
+}
+
+QPushButton#btn_convert_mp3:pressed {
+    background-color: #5b21b6;
+}
+
+QPushButton#btn_convert_mp3:disabled {
+    background-color: #cbd5e1;
+    border-color: #94a3b8;
+    color: #64748b;
+}
+
 QTableView {
     background-color: #ffffff;
     border: 1px solid #e2e8f0;

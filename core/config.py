@@ -20,6 +20,10 @@ def get_app_data_dir() -> Path:
     data_dir = base / app_name
     try:
         data_dir.mkdir(parents=True, exist_ok=True)
+        # Verify directory is writable (handles sandboxed environments)
+        test_file = data_dir / ".write_test"
+        test_file.touch()
+        test_file.unlink()
         return data_dir
     except (PermissionError, OSError):
         # Fallback to local directory for portable mode or sandboxed environments
@@ -150,3 +154,22 @@ class Config:
     def auto_check_update(self, val: bool):
         self._data["auto_check_update"] = bool(val)
         self.save()
+
+    @property
+    def custom_ytdlp_path(self) -> str:
+        return self._data.get("custom_ytdlp_path", "")
+
+    @custom_ytdlp_path.setter
+    def custom_ytdlp_path(self, val: str):
+        self._data["custom_ytdlp_path"] = val
+        self.save()
+
+    @property
+    def custom_ffmpeg_path(self) -> str:
+        return self._data.get("custom_ffmpeg_path", "")
+
+    @custom_ffmpeg_path.setter
+    def custom_ffmpeg_path(self, val: str):
+        self._data["custom_ffmpeg_path"] = val
+        self.save()
+

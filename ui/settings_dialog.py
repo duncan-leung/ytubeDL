@@ -24,9 +24,11 @@ from core.bin_helper import (
     download_ytdlp_binary,
     find_ffmpeg,
     find_ytdlp,
+    get_ffmpeg_version,
     get_ytdlp_version,
 )
 from core.config import Config
+from core.converter import FFmpegDownloadWorker
 
 
 class UpdateWorker(QThread):
@@ -115,27 +117,53 @@ class SettingsDialog(QDialog):
         grp_bin = QGroupBox("Engine & Binary Status (yt-dlp / FFmpeg)", self)
         l_bin = QVBoxLayout(grp_bin)
 
+        # yt-dlp status
         self.lbl_ytdlp_ver = QLabel("yt-dlp: Checking...", self)
         self.lbl_ytdlp_ver.setStyleSheet("font-weight: 600; color: #1e293b;")
         l_bin.addWidget(self.lbl_ytdlp_ver)
 
-        self.lbl_ffmpeg = QLabel("FFmpeg: Checking...", self)
-        l_bin.addWidget(self.lbl_ffmpeg)
-
-        # Update button & progress
-        h_upd = QHBoxLayout()
+        h_upd_ytdlp = QHBoxLayout()
         self.btn_check_upd = QPushButton("🔍 Check for Updates", self)
         self.btn_check_upd.clicked.connect(self._check_ytdlp_update)
         self.btn_upd_now = QPushButton("🔄 Update / Install yt-dlp Now", self)
         self.btn_upd_now.clicked.connect(self._start_ytdlp_update)
-        h_upd.addWidget(self.btn_check_upd)
-        h_upd.addWidget(self.btn_upd_now)
-        h_upd.addStretch()
-        l_bin.addLayout(h_upd)
+        h_upd_ytdlp.addWidget(self.btn_check_upd)
+        h_upd_ytdlp.addWidget(self.btn_upd_now)
+        h_upd_ytdlp.addStretch()
+        l_bin.addLayout(h_upd_ytdlp)
 
         self.upd_progress = QProgressBar(self)
         self.upd_progress.setVisible(False)
         l_bin.addWidget(self.upd_progress)
+
+        l_bin.addSpacing(8)
+
+        # FFmpeg status
+        self.lbl_ffmpeg = QLabel("FFmpeg: Checking...", self)
+        self.lbl_ffmpeg.setStyleSheet("font-weight: 600; color: #1e293b;")
+        l_bin.addWidget(self.lbl_ffmpeg)
+
+        # Custom FFmpeg path
+        h_ffpath = QHBoxLayout()
+        self.txt_ffmpeg_path = QLineEdit(self)
+        self.txt_ffmpeg_path.setPlaceholderText("Auto-detect or custom path to ffmpeg executable...")
+        self.btn_browse_ff = QPushButton("Browse FFmpeg...", self)
+        self.btn_browse_ff.clicked.connect(self._browse_ffmpeg)
+        h_ffpath.addWidget(self.txt_ffmpeg_path, stretch=1)
+        h_ffpath.addWidget(self.btn_browse_ff)
+        l_bin.addLayout(h_ffpath)
+
+        # FFmpeg Install / Download button
+        h_upd_ffmpeg = QHBoxLayout()
+        self.btn_install_ffmpeg = QPushButton("🔄 Install / Download FFmpeg Now", self)
+        self.btn_install_ffmpeg.clicked.connect(self._start_ffmpeg_update)
+        h_upd_ffmpeg.addWidget(self.btn_install_ffmpeg)
+        h_upd_ffmpeg.addStretch()
+        l_bin.addLayout(h_upd_ffmpeg)
+
+        self.ffmpeg_progress = QProgressBar(self)
+        self.ffmpeg_progress.setVisible(False)
+        l_bin.addWidget(self.ffmpeg_progress)
 
         layout.addWidget(grp_bin)
 
@@ -158,6 +186,12 @@ class SettingsDialog(QDialog):
         if f:
             self.txt_cookie_file.setText(f)
 
+    def _browse_ffmpeg(self):
+        filter_str = "FFmpeg Executable (ffmpeg.exe ffmpeg);;All Files (*)" if sys.platform == "win32" else "All Files (*)"
+        f, _ = QFileDialog.getOpenFileName(self, "Select FFmpeg Binary", "", filter_str)
+        if f:
+            self.txt_ffmpeg_path.setText(f)
+
     def _load_values(self):
         self.txt_out.setText(self.config.output_dir)
         self.spin_delay.setValue(self.config.delay_between)
@@ -169,6 +203,7 @@ class SettingsDialog(QDialog):
 
         self.txt_cookie_file.setText(self.config.cookies_file)
         self.chk_js.setChecked(self.config.enable_js_runtime)
+        self.txt_ffmpeg_path.setText(self.config.custom_ffmpeg_path)
 
     def _save_values(self):
         self.config.output_dir = self.txt_out.text().strip()
@@ -176,6 +211,7 @@ class SettingsDialog(QDialog):
         self.config.cookies_from_browser = self.cmb_browser.currentText()
         self.config.cookies_file = self.txt_cookie_file.text().strip()
         self.config.enable_js_runtime = self.chk_js.isChecked()
+        self.config.custom_ffmpeg_path = self.txt_ffmpeg_path.text().strip()
         self.accept()
 
     def _refresh_bin_labels(self):
@@ -186,11 +222,13 @@ class SettingsDialog(QDialog):
         else:
             self.lbl_ytdlp_ver.setText("yt-dlp: ❌ Not Found! Click 'Update / Install yt-dlp Now' below.")
 
-        ffmpeg_bin = find_ffmpeg(self.config.get("custom_ffmpeg_path"))
+        custom_ff = self.txt_ffmpeg_path.text().strip() or self.config.get("custom_ffmpeg_path")
+        ffmpeg_bin = find_ffmpeg(custom_ff)
         if ffmpeg_bin:
-            self.lbl_ffmpeg.setText(f"FFmpeg: ✅ Found at {ffmpeg_bin}")
+            ver = get_ffmpeg_version(ffmpeg_bin) or "Active"
+            self.lbl_ffmpeg.setText(f"FFmpeg: ✅ Active ({ver})\nPath: {ffmpeg_bin}")
         else:
-            self.lbl_ffmpeg.setText("FFmpeg: ⚠️ Not detected (needed for merging 1080p+ streams).")
+            self.lbl_ffmpeg.setText("FFmpeg: ⚠️ Not detected! Click 'Install / Download FFmpeg Now' below.")
 
     def _check_ytdlp_update(self):
         self.btn_check_upd.setEnabled(False)
@@ -238,3 +276,28 @@ class SettingsDialog(QDialog):
             self._refresh_bin_labels()
         else:
             QMessageBox.critical(self, "Update Failed", msg)
+
+    def _start_ffmpeg_update(self):
+        self.btn_install_ffmpeg.setEnabled(False)
+        self.ffmpeg_progress.setVisible(True)
+        self.ffmpeg_progress.setRange(0, 100)
+        self.ffmpeg_progress.setValue(0)
+
+        self._ff_worker = FFmpegDownloadWorker(self)
+        self._ff_worker.progress.connect(self._on_ffmpeg_update_progress)
+        self._ff_worker.finished.connect(self._on_ffmpeg_update_finished)
+        self._ff_worker.start()
+
+    def _on_ffmpeg_update_progress(self, current: int, total: int):
+        if total > 0:
+            percent = int((current / total) * 100)
+            self.ffmpeg_progress.setValue(percent)
+
+    def _on_ffmpeg_update_finished(self, success: bool, msg: str):
+        self.btn_install_ffmpeg.setEnabled(True)
+        self.ffmpeg_progress.setVisible(False)
+        if success:
+            QMessageBox.information(self, "FFmpeg Installed", msg)
+            self._refresh_bin_labels()
+        else:
+            QMessageBox.critical(self, "FFmpeg Installation Failed", msg)

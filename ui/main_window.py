@@ -23,15 +23,23 @@ from PyQt5.QtWidgets import (
     QShortcut,
     QSplitter,
     QTableView,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from core.bin_helper import find_ytdlp, get_ytdlp_version
+from core.bin_helper import (
+    find_ffmpeg,
+    find_ytdlp,
+    get_ffmpeg_version,
+    get_ytdlp_version,
+)
 from core.config import Config
+from core.converter import ConvertWorker, FFmpegDownloadWorker
 from core.db import Database
 from core.downloader import DownloadWorker
 from ui.batch_dialog import BatchDialog
+from ui.channel_view import ChannelView
 from ui.settings_dialog import SettingsDialog
 from ui.styles import MODERN_STYLE
 from ui.table_model import DownloadTableModel
@@ -44,7 +52,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = db
         self.config = config
-        self.worker: DownloadWorker = None
+        self.worker: Optional[DownloadWorker] = None
+        self.convert_worker: Optional[ConvertWorker] = None
+        self.ffmpeg_download_worker: Optional[FFmpegDownloadWorker] = None
 
         self.current_filter = "all"
         self.search_query = ""
@@ -101,6 +111,25 @@ class MainWindow(QMainWindow):
         act_clear_comp.triggered.connect(self._clear_completed)
         menu_queue.addAction(act_clear_comp)
 
+        # Channels Menu
+        menu_channels = menubar.addMenu("&Channels")
+        act_add_ch = QAction("Add &New Channel...", self)
+        act_add_ch.triggered.connect(self._open_add_channel_action)
+        menu_channels.addAction(act_add_ch)
+
+        act_sync_all = QAction("&Check All Channels", self)
+        act_sync_all.triggered.connect(self._sync_all_channels_action)
+        menu_channels.addAction(act_sync_all)
+
+        menu_channels.addSeparator()
+        act_unfold = QAction("&Unfold All Channels", self)
+        act_unfold.triggered.connect(lambda: self.channel_view._unfold_all())
+        menu_channels.addAction(act_unfold)
+
+        act_fold = QAction("&Fold All Channels", self)
+        act_fold.triggered.connect(lambda: self.channel_view._fold_all())
+        menu_channels.addAction(act_fold)
+
         # Help Menu
         menu_help = menubar.addMenu("&Help")
         act_check_upd = QAction("Check for yt-dlp &Updates...", self)
@@ -115,10 +144,43 @@ class MainWindow(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(16, 12, 16, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(12, 10, 12, 10)
+        main_layout.setSpacing(8)
 
-        # === 1. TOP URL ENTRY BAR ===
+        # === TABBED LAYOUT ===
+        self.tab_widget = QTabWidget(self)
+        self.tab_widget.setStyleSheet(
+            """
+            QTabWidget::pane {
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                background-color: #ffffff;
+            }
+            QTabBar::tab {
+                background: #f1f5f9;
+                color: #475569;
+                font-weight: 600;
+                font-size: 13px;
+                padding: 7px 18px;
+                margin-right: 4px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #1e293b;
+                border-bottom: 2px solid #2563eb;
+            }
+            """
+        )
+
+        # === TAB 1: DIRECT DOWNLOADS ===
+        tab_direct = QWidget()
+        direct_layout = QVBoxLayout(tab_direct)
+        direct_layout.setContentsMargins(10, 10, 10, 10)
+        direct_layout.setSpacing(10)
+
+        # 1. Top URL Entry Bar
         top_bar = QHBoxLayout()
 
         self.txt_url_input = QLineEdit(self)
@@ -137,9 +199,9 @@ class MainWindow(QMainWindow):
         self.btn_batch.clicked.connect(self._open_batch_dialog)
         top_bar.addWidget(self.btn_batch)
 
-        main_layout.addLayout(top_bar)
+        direct_layout.addLayout(top_bar)
 
-        # === 2. OUTPUT FOLDER & CONTROLS BAR ===
+        # 2. Output Folder & Controls Bar
         control_bar = QHBoxLayout()
 
         lbl_out = QLabel("Output Folder:", self)
@@ -162,7 +224,7 @@ class MainWindow(QMainWindow):
 
         control_bar.addSpacing(16)
 
-        # Run / Stop Buttons
+        # Run / Stop / Convert Buttons
         self.btn_run = QPushButton("▶ Run Downloads", self)
         self.btn_run.setObjectName("btn_run")
         self.btn_run.setMinimumWidth(130)
@@ -172,12 +234,20 @@ class MainWindow(QMainWindow):
         self.btn_stop = QPushButton("⏹ Stop", self)
         self.btn_stop.setObjectName("btn_stop")
         self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self._stop_download_queue)
+        self.btn_stop.clicked.connect(self._stop_current_task)
         control_bar.addWidget(self.btn_stop)
 
-        main_layout.addLayout(control_bar)
+        control_bar.addSpacing(8)
 
-        # === 3. FILTER & SEARCH BAR ===
+        self.btn_convert_mp3 = QPushButton("🎵 Convert to MP3", self)
+        self.btn_convert_mp3.setObjectName("btn_convert_mp3")
+        self.btn_convert_mp3.setToolTip("Convert selected completed download row(s) to MP3 with same filename")
+        self.btn_convert_mp3.clicked.connect(self._convert_selected_to_mp3)
+        control_bar.addWidget(self.btn_convert_mp3)
+
+        direct_layout.addLayout(control_bar)
+
+        # 3. Filter & Search Bar
         filter_bar = QHBoxLayout()
 
         self.btn_filter_all = QPushButton("All", self)
@@ -210,9 +280,9 @@ class MainWindow(QMainWindow):
         btn_refresh.clicked.connect(self.refresh_table)
         filter_bar.addWidget(btn_refresh)
 
-        main_layout.addLayout(filter_bar)
+        direct_layout.addLayout(filter_bar)
 
-        # === 4. CENTRAL TABLE VIEW (VIRTUALIZED) ===
+        # 4. Central Table View
         self.model = DownloadTableModel(self.db, self)
         self.table_view = QTableView(self)
         self.table_view.setModel(self.model)
@@ -222,7 +292,6 @@ class MainWindow(QMainWindow):
         self.table_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table_view.customContextMenuRequested.connect(self._show_context_menu)
 
-        # Column sizing
         header = self.table_view.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         self.table_view.setColumnWidth(0, 60)
@@ -234,7 +303,17 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(4, QHeaderView.Interactive)
         self.table_view.setColumnWidth(4, 260)
 
-        main_layout.addWidget(self.table_view, stretch=1)
+        direct_layout.addWidget(self.table_view, stretch=1)
+
+        self.tab_widget.addTab(tab_direct, "📥 Direct Downloads")
+
+        # === TAB 2: CHANNELS & FEEDS ===
+        self.channel_view = ChannelView(self.db, self.config, self)
+        self.channel_view.log_message.connect(self._append_log)
+        self.channel_view.status_changed.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
+        self.tab_widget.addTab(self.channel_view, "📺 Channels & Feeds")
+
+        main_layout.addWidget(self.tab_widget, stretch=1)
 
         # === 5. PROGRESS & LIVE LOG DRAWER ===
         prog_bar_layout = QHBoxLayout()
@@ -296,6 +375,14 @@ class MainWindow(QMainWindow):
     def _on_search_changed(self, text: str):
         self.search_query = text.strip()
         self.refresh_table()
+
+    def _open_add_channel_action(self):
+        self.tab_widget.setCurrentWidget(self.channel_view)
+        self.channel_view._open_add_channel_dialog()
+
+    def _sync_all_channels_action(self):
+        self.tab_widget.setCurrentWidget(self.channel_view)
+        self.channel_view._start_channel_sync()
 
     def _add_single_url(self):
         url = self.txt_url_input.text().strip()
@@ -383,11 +470,19 @@ class MainWindow(QMainWindow):
         self.worker.queue_finished.connect(self._on_queue_finished)
         self.worker.start()
 
-    def _stop_download_queue(self):
+    def _stop_current_task(self):
+        """Stop whatever task is currently running (download or conversion)."""
         if self.worker and self.worker.isRunning():
-            self.lbl_batch_status.setText("Stopping queue...")
+            self.lbl_batch_status.setText("Stopping download queue...")
             self.worker.stop()
             self.btn_stop.setEnabled(False)
+        if self.convert_worker and self.convert_worker.isRunning():
+            self.lbl_batch_status.setText("Stopping MP3 conversion...")
+            self.convert_worker.stop()
+            self.btn_stop.setEnabled(False)
+
+    def _stop_download_queue(self):
+        self._stop_current_task()
 
     def _append_log(self, text: str):
         self.log_viewer.appendPlainText(text)
@@ -444,12 +539,20 @@ class MainWindow(QMainWindow):
         act_run_single = menu.addAction("▶ Download Selected Now")
         act_run_single.triggered.connect(lambda: self._download_specific(items))
 
+        act_convert = menu.addAction("🎵 Convert Selected to MP3")
+        act_convert.triggered.connect(self._convert_selected_to_mp3)
+
         menu.addSeparator()
 
         # If single item selected with a filename, provide file open
         if len(items) == 1 and items[0].get("filename"):
-            act_reveal = menu.addAction("📁 Reveal Downloaded File")
+            act_reveal = menu.addAction("🎬 Reveal Video File")
             act_reveal.triggered.connect(lambda: self._reveal_file(items[0]))
+
+            mp3_path = Path(self.config.output_dir) / f"{Path(items[0]['filename']).stem}.mp3"
+            if mp3_path.is_file():
+                act_reveal_mp3 = menu.addAction("🎵 Reveal MP3 File")
+                act_reveal_mp3.triggered.connect(lambda: self._reveal_file_path(mp3_path))
 
         act_browser = menu.addAction("🌐 Open in Web Browser")
         act_browser.triggered.connect(lambda: self._open_in_browser(items[0]))
@@ -479,6 +582,9 @@ class MainWindow(QMainWindow):
         if not filename:
             return
         filepath = Path(self.config.output_dir) / filename
+        self._reveal_file_path(filepath)
+
+    def _reveal_file_path(self, filepath: Path):
         if not filepath.exists():
             QMessageBox.warning(self, "File Not Found", f"File does not exist:\n{filepath}")
             return
@@ -489,6 +595,191 @@ class MainWindow(QMainWindow):
             subprocess.run(["explorer", f"/select,{os.path.normpath(str(filepath))}"])
         else:
             subprocess.run(["xdg-open", str(filepath.parent)])
+
+    # === MP3 AUDIO CONVERSION ===
+
+    def _convert_selected_to_mp3(self):
+        """Convert selected completed download row(s) to MP3 with the same filename."""
+        if (self.worker and self.worker.isRunning()) or (
+            self.convert_worker and self.convert_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self, "Task In Progress", "Please wait for current operation to finish or stop it first."
+            )
+            return
+
+        selected_items = self._get_selected_items()
+        if not selected_items:
+            QMessageBox.information(
+                self,
+                "No Rows Selected",
+                "Please select one or more completed download row(s) in the table to convert to MP3.",
+            )
+            return
+
+        out_dir = Path(self.config.output_dir)
+        valid_items = []
+        missing_files = []
+
+        for item in selected_items:
+            fn = (item.get("filename") or "").strip()
+            if not fn:
+                missing_files.append(f"{item.get('title') or item.get('url')} (not downloaded)")
+                continue
+            src_path = out_dir / fn
+            if not src_path.is_file():
+                missing_files.append(f"{fn} (file not found on disk)")
+                continue
+            valid_items.append(item)
+
+        if not valid_items:
+            QMessageBox.warning(
+                self,
+                "Cannot Convert",
+                "None of the selected items have completed video files on disk.\n\n"
+                "Please make sure the videos are downloaded before converting.",
+            )
+            return
+
+        if missing_files and len(missing_files) < len(selected_items):
+            msg = (
+                f"{len(missing_files)} of {len(selected_items)} selected item(s) are missing or incomplete:\n"
+                + "\n".join(f" • {m}" for m in missing_files[:5])
+            )
+            if len(missing_files) > 5:
+                msg += f"\n • ...and {len(missing_files) - 5} more"
+            msg += f"\n\nDo you want to proceed converting the remaining {len(valid_items)} item(s)?"
+
+            reply = QMessageBox.question(
+                self, "Some Files Incomplete", msg, QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Check for FFmpeg executable
+        ffmpeg_bin = find_ffmpeg(self.config.get("custom_ffmpeg_path"))
+        if not ffmpeg_bin:
+            reply = QMessageBox.question(
+                self,
+                "FFmpeg Required",
+                "FFmpeg is required to convert MP4 to MP3, but it was not detected on this machine.\n\n"
+                "Would you like ytubeDL to download and configure standalone FFmpeg automatically now?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._install_ffmpeg_and_convert(valid_items)
+            else:
+                QMessageBox.information(
+                    self,
+                    "FFmpeg Setup",
+                    "To enable MP3 conversion:\n\n"
+                    "1. Open Settings (Ctrl+,)\n"
+                    "2. Click 'Install / Download FFmpeg Now' or browse to your ffmpeg.exe.\n\n"
+                    "Alternatively, place ffmpeg.exe in the same folder as ytubeDL.",
+                )
+            return
+
+        self._start_conversion(valid_items)
+
+    def _install_ffmpeg_and_convert(self, pending_items):
+        """Download and install FFmpeg with progress display, then proceed with conversion."""
+        self.btn_run.setEnabled(False)
+        self.btn_convert_mp3.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.lbl_batch_status.setText("Downloading standalone FFmpeg engine...")
+        self.statusBar().showMessage("Downloading FFmpeg binary...")
+
+        self._append_log("🔄 Downloading official standalone FFmpeg binary...")
+
+        self.ffmpeg_download_worker = FFmpegDownloadWorker(self)
+
+        def on_prog(cur, total):
+            if total > 0:
+                pct = int((cur / total) * 100)
+                self.progress_bar.setValue(pct)
+                self.progress_bar.setFormat(f"Downloading FFmpeg: {pct}%")
+
+        def on_finish(success, msg):
+            self.btn_run.setEnabled(True)
+            self.btn_convert_mp3.setEnabled(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
+
+            if success:
+                self._append_log(f"✅ {msg}")
+                self.statusBar().showMessage(msg, 5000)
+                QMessageBox.information(
+                    self, "FFmpeg Installed", f"{msg}\n\nProceeding with MP3 conversion..."
+                )
+                self._start_conversion(pending_items)
+            else:
+                self._append_log(f"❌ {msg}")
+                self.lbl_batch_status.setText("FFmpeg installation failed.")
+                QMessageBox.critical(
+                    self,
+                    "FFmpeg Download Failed",
+                    f"{msg}\n\nPlease install FFmpeg or set its path in Settings (Ctrl+,).",
+                )
+
+        self.ffmpeg_download_worker.progress.connect(on_prog)
+        self.ffmpeg_download_worker.finished.connect(on_finish)
+        self.ffmpeg_download_worker.start()
+
+    def _start_conversion(self, valid_items):
+        """Launch ConvertWorker in the background."""
+        self.btn_run.setEnabled(False)
+        self.btn_convert_mp3.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.lbl_batch_status.setText(f"Converting {len(valid_items)} item(s) to MP3...")
+
+        self.convert_worker = ConvertWorker(
+            valid_items, Path(self.config.output_dir), self.config, self
+        )
+        self.convert_worker.log_message.connect(self._append_log)
+        self.convert_worker.item_started.connect(self._on_convert_item_started)
+        self.convert_worker.item_progress.connect(self._on_convert_item_progress)
+        self.convert_worker.overall_progress.connect(self._on_overall_progress)
+        self.convert_worker.all_finished.connect(self._on_convert_all_finished)
+        self.convert_worker.start()
+
+    def _on_convert_item_started(self, item_id: int, filename: str):
+        self.lbl_batch_status.setText(f"Converting: {filename}")
+        self.statusBar().showMessage(f"Converting to MP3: {filename}")
+
+    def _on_convert_item_progress(self, item_id: int, progress_text: str):
+        self.lbl_batch_status.setText(f"Converting: {progress_text}")
+
+    def _on_convert_all_finished(
+        self, success_count: int, error_count: int, converted_files: list
+    ):
+        self.btn_run.setEnabled(True)
+        self.btn_convert_mp3.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+
+        status_text = f"Finished conversion: {success_count} succeeded, {error_count} failed."
+        self.lbl_batch_status.setText(status_text)
+        self.statusBar().showMessage(status_text, 6000)
+
+        if success_count > 0:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Conversion Complete")
+            msg_box.setIcon(QMessageBox.Information)
+            msg_box.setText(f"Successfully converted {success_count} file(s) to MP3!")
+            msg_box.setInformativeText(f"Saved with the same filename in:\n{self.config.output_dir}")
+            btn_open = msg_box.addButton("📂 Open Output Folder", QMessageBox.ActionRole)
+            msg_box.addButton(QMessageBox.Ok)
+            msg_box.exec_()
+
+            if msg_box.clickedButton() == btn_open:
+                self._open_output_folder()
+        elif error_count > 0:
+            QMessageBox.warning(
+                self,
+                "Conversion Incomplete",
+                f"Conversion failed for {error_count} item(s).\nPlease check the log viewer for details.",
+            )
 
     def _open_in_browser(self, item):
         url = item.get("url")
@@ -588,8 +879,8 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About ytubeDL",
-            f"<h3>ytubeDL</h3>"
-            f"<p>Fast, reliable desktop YouTube video downloader for macOS and Windows.</p>"
+            f"<h3>ytubeDL v2.0.0</h3>"
+            f"<p>Fast, reliable desktop YouTube video and channel downloader for macOS and Windows.</p>"
             f"<p><b>Active yt-dlp Engine:</b> {ytdlp_ver}</p>"
             f"<p>Designed with high-speed virtualized tables, reliable extraction arguments, and 1-click self-updating.</p>",
         )
