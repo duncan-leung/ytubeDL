@@ -38,6 +38,12 @@ jobs:
         run: |
           pyinstaller ytubeDL.spec
 
+      - name: Package Windows Executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/ytubeDL.exe -DestinationPath dist/ytubeDL-Windows.zip
+
       - name: Package macOS App
         if: runner.os == 'macOS'
         run: |
@@ -68,6 +74,7 @@ jobs:
           prerelease: false
           files: |
             dist/ytubeDL.exe
+            dist/ytubeDL-Windows.zip
             dist/ytubeDL-macOS.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
