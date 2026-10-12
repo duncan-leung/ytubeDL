@@ -2,10 +2,11 @@
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-from PyQt5.QtCore import QItemSelectionModel, QModelIndex, Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QStandardItem, QStandardItemModel
+from PyQt5.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QIcon, QKeySequence, QStandardItem, QStandardItemModel
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -38,23 +39,54 @@ ROLE_DATA_ID = Qt.UserRole + 2        # channel_id (int) or clip_id (int)
 ROLE_RAW_DATA = Qt.UserRole + 3       # entire channel dict or clip dict
 
 
+def format_local_timestamp(utc_str: Optional[str], fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Convert a UTC timestamp string (e.g. from SQLite CURRENT_TIMESTAMP) to the device's local timezone."""
+    if not utc_str or not isinstance(utc_str, str):
+        return ""
+    clean = utc_str.strip()
+    if clean.lower() in ("never checked", "none", ""):
+        return clean
+
+    for pattern in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ):
+        try:
+            dt = datetime.strptime(clean, pattern)
+            dt_utc = dt.replace(tzinfo=timezone.utc)
+            dt_local = dt_utc.astimezone()  # Device local timezone
+            return dt_local.strftime(fmt)
+        except (ValueError, OverflowError):
+            continue
+    return clean[:16] if len(clean) >= 16 else clean
+
+
 class ChannelTreeView(QTreeView):
     """Custom QTreeView with drag-and-drop channel re-ordering."""
 
-    channel_dropped = pyqtSignal(int, int, str)  # (source_channel_id, target_row_index, indicator)
+    channel_dropped = pyqtSignal(int, object, str)  # (source_id, target_id_or_None, indicator_str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
-        self.setDragDropMode(QTreeView.InternalMove)
+        self.setDefaultDropAction(Qt.CopyAction)
 
     def startDrag(self, supportedActions):
         indexes = self.selectedIndexes()
         if not indexes or indexes[0].parent().isValid():
             return
-        super().startDrag(supportedActions)
+        item = self.model().itemFromIndex(indexes[0])
+        if not item or item.data(ROLE_NODE_TYPE) != "channel":
+            return
+        drag = QDrag(self)
+        mime_data = self.model().mimeData(indexes)
+        drag.setMimeData(mime_data)
+        # Use CopyAction so Qt's default drag handler never calls clearOrRemove() on our model
+        drag.exec_(Qt.CopyAction)
 
     def dragEnterEvent(self, event):
         indexes = self.selectedIndexes()
@@ -85,18 +117,23 @@ class ChannelTreeView(QTreeView):
         pos = event.pos()
         target_idx = self.indexAt(pos)
 
-        if not target_idx.isValid():
-            target_row = self.model().rowCount()
-            indicator_str = "below"
-        else:
+        target_id = None
+        indicator_str = "below"
+
+        if target_idx.isValid():
             if target_idx.parent().isValid():
                 target_idx = target_idx.parent()
-            target_row = target_idx.row()
-            rect = self.visualRect(target_idx)
-            indicator_str = "below" if pos.y() > rect.center().y() else "above"
+            target_item = self.model().itemFromIndex(target_idx)
+            if target_item and target_item.data(ROLE_NODE_TYPE) == "channel":
+                target_id = target_item.data(ROLE_DATA_ID)
+                rect = self.visualRect(target_idx)
+                indicator_str = "below" if pos.y() > rect.center().y() else "above"
 
-        event.acceptProposedAction()
-        self.channel_dropped.emit(source_id, target_row, indicator_str)
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+
+        # Defer execution so startDrag terminates cleanly before refresh_tree modifies the model
+        QTimer.singleShot(0, lambda: self.channel_dropped.emit(source_id, target_id, indicator_str))
 
 
 class ChannelView(QWidget):
@@ -311,7 +348,8 @@ class ChannelView(QWidget):
             ch_name = ch["name"]
             c_type = ch.get("content_type", "videos")
             ch_folder = ch.get("folder", "")
-            last_checked = ch.get("last_checked") or "Never checked"
+            last_checked = ch.get("last_checked") or ""
+            local_checked = format_local_timestamp(last_checked) if last_checked else "Never checked"
             limit = ch.get("check_limit", 20)
             auto_dl = "Auto-DL: ON" if ch.get("auto_download", 1) else "Auto-DL: OFF"
 
@@ -342,7 +380,8 @@ class ChannelView(QWidget):
                 f"Channel: {ch_name}\n"
                 f"Type: {c_type.capitalize()}\n"
                 f"Check Limit: {limit} latest clips\n"
-                f"Clips in database: {len(clips)}"
+                f"Clips in database: {len(clips)}\n"
+                f"Last Checked: {local_checked}"
             )
 
             item_type = QStandardItem(f"{c_type.capitalize()} (Limit: {limit})")
@@ -353,9 +392,11 @@ class ChannelView(QWidget):
             item_status.setData("channel", ROLE_NODE_TYPE)
             item_status.setData(ch_id, ROLE_DATA_ID)
 
-            item_date = QStandardItem(f"Checked: {last_checked[:16] if len(last_checked) >= 16 else last_checked}")
+            item_date = QStandardItem(f"Checked: {local_checked}")
             item_date.setData("channel", ROLE_NODE_TYPE)
             item_date.setData(ch_id, ROLE_DATA_ID)
+            if last_checked:
+                item_date.setToolTip(f"Last checked: {local_checked} (Local Time)\nUTC: {last_checked}")
 
             item_folder = QStandardItem(ch_folder)
             item_folder.setData("channel", ROLE_NODE_TYPE)
@@ -369,6 +410,7 @@ class ChannelView(QWidget):
                 clip_title = clip.get("title") or clip.get("video_id") or "Untitled Clip"
                 clip_status = clip.get("status", "pending")
                 clip_date = clip.get("download_date") or clip.get("discovered_at") or ""
+                local_clip_date = format_local_timestamp(clip_date)
                 clip_fn = clip.get("filename") or ""
 
                 if clip_status == "completed":
@@ -393,9 +435,11 @@ class ChannelView(QWidget):
                 child_status.setData("clip", ROLE_NODE_TYPE)
                 child_status.setData(clip_id, ROLE_DATA_ID)
 
-                child_date = QStandardItem(clip_date[:16] if len(clip_date) >= 16 else clip_date)
+                child_date = QStandardItem(local_clip_date)
                 child_date.setData("clip", ROLE_NODE_TYPE)
                 child_date.setData(clip_id, ROLE_DATA_ID)
+                if clip_date:
+                    child_date.setToolTip(f"Recorded: {local_clip_date} (Local Time)\nUTC: {clip_date}")
 
                 child_fn = QStandardItem(clip_fn)
                 child_fn.setData("clip", ROLE_NODE_TYPE)
@@ -433,19 +477,20 @@ class ChannelView(QWidget):
 
     # === REORDERING & DRAG-AND-DROP ===
 
-    def _on_channel_dropped(self, source_id: int, target_row: int, indicator: str):
+    def _on_channel_dropped(self, source_id: int, target_id: Optional[int], indicator: str):
         channels = self.db.get_channels()
         ch_ids = [c["id"] for c in channels]
         if source_id not in ch_ids:
             return
-        curr_idx = ch_ids.index(source_id)
         ch_ids.remove(source_id)
-        if indicator == "below":
-            new_pos = target_row if curr_idx > target_row else target_row
+        if target_id is None or target_id not in ch_ids:
+            ch_ids.append(source_id)
         else:
-            new_pos = target_row if curr_idx > target_row else max(0, target_row - 1)
-        new_pos = max(0, min(new_pos, len(ch_ids)))
-        ch_ids.insert(new_pos, source_id)
+            idx = ch_ids.index(target_id)
+            if indicator == "below":
+                ch_ids.insert(idx + 1, source_id)
+            else:
+                ch_ids.insert(idx, source_id)
         self.db.reorder_channels(ch_ids)
         self.refresh_tree(selected_channel_id=source_id)
         self.status_changed.emit("Reordered channels.")

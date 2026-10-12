@@ -639,14 +639,14 @@ class Database:
         if status:
             query += " AND status = ?"
             params.append(status)
-        query += " ORDER BY id DESC"
+        query += " ORDER BY id ASC"
         cursor = conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
     def get_all_channel_videos(self) -> List[Dict]:
         """Fetch all video records across all channels."""
         conn = self._get_connection()
-        cursor = conn.execute("SELECT * FROM channel_videos ORDER BY id DESC")
+        cursor = conn.execute("SELECT * FROM channel_videos ORDER BY id ASC")
         return [dict(row) for row in cursor.fetchall()]
 
     def update_channel_video_status(
