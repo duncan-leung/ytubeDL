@@ -250,6 +250,14 @@ class ChannelView(QWidget):
         header.setSectionResizeMode(4, QHeaderView.Interactive)
         self.tree_view.setColumnWidth(4, 280)
 
+        # Keyboard shortcuts for tree view
+        shortcut_up = QShortcut(QKeySequence("Alt+Up"), self.tree_view)
+        shortcut_up.activated.connect(self._move_channel_up)
+        shortcut_down = QShortcut(QKeySequence("Alt+Down"), self.tree_view)
+        shortcut_down.activated.connect(self._move_channel_down)
+        shortcut_rename = QShortcut(QKeySequence(Qt.Key_F2), self.tree_view)
+        shortcut_rename.activated.connect(self._on_rename_shortcut)
+
         layout.addWidget(self.tree_view, stretch=1)
 
         # === 3. BOTTOM PROGRESS BAR ===
@@ -304,6 +312,7 @@ class ChannelView(QWidget):
             c_type = ch.get("content_type", "videos")
             ch_folder = ch.get("folder", "")
             last_checked = ch.get("last_checked") or "Never checked"
+            limit = ch.get("check_limit", 20)
             auto_dl = "Auto-DL: ON" if ch.get("auto_download", 1) else "Auto-DL: OFF"
 
             clips = self.db.get_channel_videos(ch_id)
@@ -323,18 +332,24 @@ class ChannelView(QWidget):
 
             # Create Channel Row (Parent)
             type_icon = "🎬" if c_type == "videos" else ("⚡" if c_type == "shorts" else "📑")
-            ch_title_text = f"{type_icon} {ch_name} ({len(clips)} clips)"
+            ch_title_text = f"{type_icon} {ch_name}"
             item_name = QStandardItem(ch_title_text)
             item_name.setFont(bold_font)
             item_name.setData("channel", ROLE_NODE_TYPE)
             item_name.setData(ch_id, ROLE_DATA_ID)
             item_name.setData(ch, ROLE_RAW_DATA)
+            item_name.setToolTip(
+                f"Channel: {ch_name}\n"
+                f"Type: {c_type.capitalize()}\n"
+                f"Check Limit: {limit} latest clips\n"
+                f"Clips in database: {len(clips)}"
+            )
 
-            item_type = QStandardItem(c_type.capitalize())
+            item_type = QStandardItem(f"{c_type.capitalize()} (Limit: {limit})")
             item_type.setData("channel", ROLE_NODE_TYPE)
             item_type.setData(ch_id, ROLE_DATA_ID)
 
-            item_status = QStandardItem(auto_dl)
+            item_status = QStandardItem(f"{auto_dl} • {len(clips)} saved")
             item_status.setData("channel", ROLE_NODE_TYPE)
             item_status.setData(ch_id, ROLE_DATA_ID)
 
@@ -497,6 +512,29 @@ class ChannelView(QWidget):
             ch = self.db.get_channel(cid)
             if ch:
                 self._open_edit_channel_dialog(ch)
+
+    def _on_rename_shortcut(self):
+        items = self._get_selected_items()
+        if not items:
+            return
+        it = items[0]
+        if it.data(ROLE_NODE_TYPE) == "channel":
+            cid = it.data(ROLE_DATA_ID)
+            ch_data = it.data(ROLE_RAW_DATA)
+            if cid and ch_data:
+                self._quick_rename_channel(cid, ch_data.get("name", ""))
+
+    def _quick_rename_channel(self, ch_id: int, current_name: str):
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Channel",
+            "Enter new channel display name:",
+            text=current_name,
+        )
+        if ok and new_name.strip():
+            self.db.update_channel(channel_id=ch_id, name=new_name.strip())
+            self.refresh_tree(selected_channel_id=ch_id)
+            self.status_changed.emit(f"Renamed channel to '{new_name.strip()}'.")
 
     def _open_add_channel_dialog(self):
         dlg = ChannelDialog(self.config, parent=self)
@@ -681,6 +719,9 @@ class ChannelView(QWidget):
 
             act_open_folder = menu.addAction("📁 Open Save Folder")
             act_open_folder.triggered.connect(lambda: self._open_channel_folder(ch_data))
+
+            act_rename = menu.addAction("✏ Rename Channel... (F2)")
+            act_rename.triggered.connect(lambda: self._quick_rename_channel(ch_id, ch_data["name"]))
 
             act_edit = menu.addAction("⚙ Edit Channel Settings...")
             act_edit.triggered.connect(lambda: self._open_edit_channel_dialog(ch_data))
