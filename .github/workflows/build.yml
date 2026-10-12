@@ -47,6 +47,8 @@ jobs:
       - name: Package macOS App
         if: runner.os == 'macOS'
         run: |
+          mkdir -p dist/artifact
+          cp -R dist/ytubeDL.app dist/artifact/
           cd dist
           zip -r ytubeDL-macOS.zip ytubeDL.app
           cd ..
@@ -63,7 +65,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ytubeDL-macOS
-          path: dist/ytubeDL.app
+          path: dist/artifact
 
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
